@@ -1,16 +1,10 @@
 use async_trait::async_trait;
 use hickory_server::ServerFuture;
-use hickory_server::authority::AuthorityObject;
 use hickory_server::proto::rr::rdata::TXT;
 use hickory_server::proto::rr::{LowerName, Name, RData, Record};
-use hickory_server::{
-    authority::Catalog, authority::ZoneType, store::in_memory::InMemoryAuthority,
-};
-use instant_acme::{Account, Key};
-use pingora::prelude::background_service;
+use hickory_server::{authority::ZoneType, store::in_memory::InMemoryAuthority};
 use pingora::server::{ListenFds, ShutdownWatch};
 use pingora::services::Service;
-use pingora::services::background::BackgroundService;
 use pingora::{
     Result,
     http::RequestHeader,
@@ -19,7 +13,6 @@ use pingora::{
     proxy,
     server::Server,
 };
-use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::{
@@ -65,11 +58,11 @@ impl proxy::ProxyHttp for LB {
     }
 }
 
-pub struct DnsService {}
+pub struct DnsService;
 
 impl DnsService {
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 }
 
@@ -96,16 +89,17 @@ impl Service for DnsService {
 
         authority.upsert(txt_record, 0).await;
 
-        let authority_obj: Arc<dyn AuthorityObject> = Arc::new(authority);
+        let authority_obj = Arc::new(authority);
         let lowername = LowerName::new(&origin);
 
-        catalog.upsert(lowername, vec![authority_obj.clone()]);
+        catalog.upsert(lowername, vec![authority_obj]);
 
         let mut server = ServerFuture::new(catalog);
         let udp_socket = if let Some(fds) = fds.as_ref() {
             let mut fds_lock = fds.lock().await;
 
             if let Some(&fd) = fds_lock.get("0.0.0.0:1053") {
+                // SAFETY: pingora will make sure the `fd` is available
                 unsafe { StdUdpSocket::from_raw_fd(fd) }
             } else {
                 let sock = StdUdpSocket::bind("0.0.0.0:1053").expect("Failed to bind UDP");
@@ -119,11 +113,9 @@ impl Service for DnsService {
         udp_socket
             .set_nonblocking(true)
             .expect("failed to set non-blocking");
-        let tokio_udp = tokio::net::UdpSocket::from_std(udp_socket)
-            .expect("failed to convert std udp to tokio udp");
+        let tokio_udp =
+            UdpSocket::from_std(udp_socket).expect("failed to convert std udp to tokio udp");
         server.register_socket(tokio_udp);
-
-        println!("DNS Service Started.");
 
         tokio::select! {
             result = server.block_until_done() => {
@@ -139,7 +131,6 @@ impl Service for DnsService {
 }
 
 fn main() {
-    env_logger::init();
     let mut my_server = Server::new(None).unwrap();
     my_server.bootstrap();
 
@@ -152,9 +143,7 @@ fn main() {
     let mut lb = proxy::http_proxy_service(&my_server.configuration, LB(Arc::new(upstreams)));
     lb.add_tcp("0.0.0.0:6188");
 
-    let dns_service = DnsService::new();
-
-    my_server.add_service(dns_service);
+    my_server.add_service(DnsService);
     my_server.add_service(lb);
     my_server.run_forever();
 }
