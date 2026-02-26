@@ -1,5 +1,5 @@
 [workspace]
-members = ["jxd-agent","jxd-control-plane","jxd-core", "jxd-logs","jxd-proxy"]
+members = ["jxd-core","jxd-proxy"]
 resolver = "3"
 
 [workspace.dependencies]
