@@ -80,8 +80,11 @@ pub fn build(b: *std.Build) void {
                 // importing modules from different packages).
                 .{ .name = "jxd_logs_zig", .module = mod },
             },
+            .link_libc = true,
         }),
     });
+
+    exe.root_module.linkSystemLibrary("libsystemd", .{});
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
@@ -89,33 +92,8 @@ pub fn build(b: *std.Build) void {
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
 
-    const exe_check = b.addExecutable(.{
-        .name = "jxd_logs_zig",
-        .root_module = b.createModule(.{
-            // b.createModule defines a new module just like b.addModule but,
-            // unlike b.addModule, it does not expose the module to consumers of
-            // this package, which is why in this case we don't have to give it a name.
-            .root_source_file = b.path("src/main.zig"),
-            // Target and optimization levels must be explicitly wired in when
-            // defining an executable or library (in the root module), and you
-            // can also hardcode a specific target for an executable or library
-            // definition if desireable (e.g. firmware for embedded devices).
-            .target = target,
-            .optimize = optimize,
-            // List of modules available for import in source files part of the
-            // root module.
-            .imports = &.{
-                // Here "jxd_logs_zig" is the name you will use in your source code to
-                // import this module (e.g. `@import("jxd_logs_zig")`). The name is
-                // repeated because you are allowed to rename your imports, which
-                // can be extremely useful in case of collisions (which can happen
-                // importing modules from different packages).
-                .{ .name = "jxd_logs_zig", .module = mod },
-            },
-        }),
-    });
-    const check = b.step("check", "Check if jxd_logs_zig compiles");
-    check.dependOn(&exe_check.step);
+    const check_step = b.step("check", "Check if jxd_logs_zig compiles");
+    check_step.dependOn(&exe.step);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
