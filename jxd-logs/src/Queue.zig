@@ -1,11 +1,13 @@
 const std = @import("std");
-const Req = @import("Req.zig");
 const assert = std.debug.assert;
+const Req = @import("main.zig").Req;
 
 const Self = @This();
 
 head: ?*Req = null,
 tail: ?*Req = null,
+
+pub const empty: Self = .{};
 
 pub fn push(self: *Self, r: *Req) void {
     assert(r.next == null);
@@ -23,9 +25,11 @@ pub fn pop(self: *Self) ?*Req {
     self.head = r.next;
     if (self.head == null) self.tail = null;
 
+    r.next = null;
+
     return r;
 }
 
-pub fn is_empty(self: Self) bool {
+pub fn is_empty(self: *Self) bool {
     return self.head == null;
 }

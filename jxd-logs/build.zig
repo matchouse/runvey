@@ -58,7 +58,7 @@ pub fn build(b: *std.Build) void {
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
     const exe = b.addExecutable(.{
-        .name = "jxd_logs_zig",
+        .name = "jxd_logs_server",
         .root_module = b.createModule(.{
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
@@ -86,14 +86,38 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.linkSystemLibrary("libsystemd", .{});
 
+    const client_exe = b.addExecutable(.{
+        .name = "jxd_logs_client",
+        .root_module = b.createModule(.{
+            // b.createModule defines a new module just like b.addModule but,
+            // unlike b.addModule, it does not expose the module to consumers of
+            // this package, which is why in this case we don't have to give it a name.
+            .root_source_file = b.path("src/client/main.zig"),
+            // Target and optimization levels must be explicitly wired in when
+            // defining an executable or library (in the root module), and you
+            // can also hardcode a specific target for an executable or library
+            // definition if desireable (e.g. firmware for embedded devices).
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
     // step). By default the install prefix is `zig-out/` but can be overridden
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
+    b.installArtifact(client_exe);
 
     const check_step = b.step("check", "Check if jxd_logs_zig compiles");
     check_step.dependOn(&exe.step);
+    check_step.dependOn(&client_exe.step);
+
+    const client_step = b.step("client", "build client");
+    client_step.dependOn(&client_exe.step);
+
+    const install_client = b.addInstallArtifact(client_exe, .{});
+    client_step.dependOn(&install_client.step);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
@@ -113,7 +137,8 @@ pub fn build(b: *std.Build) void {
 
     // By making the run step depend on the default step, it will be run from the
     // installation directory rather than directly from within the cache directory.
-    run_cmd.step.dependOn(b.getInstallStep());
+    const install_exe = b.addInstallArtifact(exe, .{});
+    run_cmd.step.dependOn(&install_exe.step);
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
