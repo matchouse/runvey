@@ -84,8 +84,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    exe.root_module.linkSystemLibrary("libsystemd", .{});
-
     const client_exe = b.addExecutable(.{
         .name = "jxd_logs_client",
         .root_module = b.createModule(.{
@@ -172,6 +170,20 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    const fuzz = b.step("fuzz", "build fuzz object file");
+
+    const fuzz_lib = b.addLibrary(.{
+        .name = "jxd_logs_fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+            .pic = true,
+        }),
+    });
+
+    fuzz.dependOn(&b.addInstallArtifact(fuzz_lib, .{}).step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const ring_buf = @import("ring_buf.zig");
 const freelist = @import("freelist.zig");
 const Queue = @import("Queue.zig");
+const proto = @import("proto.zig");
 
 const listen_backlog = 256;
 const sq_depth = 256;
@@ -15,30 +16,60 @@ var debug_allocator = heap.DebugAllocator(.{ .safety = true }).init;
 var keep_running: std.atomic.Value(bool) = .init(true);
 var stop_accept = false;
 
-fn sigHandler(_: i32) callconv(.c) void {
+fn sigHandler(_: os.SIG) callconv(.c) void {
     keep_running.store(false, .monotonic);
 }
 
-const ReqType = enum { accept, recv, close };
+const ReqOperation = enum { accept, recv, close, timer };
 
-pub const Req = struct { type: ReqType, fd: i32, buf: [4096]u8 = undefined, next: ?*Req = null };
+const buf_size = 4096;
+const header_size = 10;
+
+pub const Req = struct {
+    operation: ReqOperation,
+    fd: i32,
+    position: u16 = 0,
+    buf: [buf_size]u8 = undefined,
+    next: ?*Req = null,
+};
 
 fn push_to_queue(queue: *Queue, item: *Req) void {
     stop_accept = true;
     queue.push(item);
 }
 
-pub fn main() !void {
-    comptime if (builtin.target.os.tag != .linux) {
-        @compileError("only Linux supported");
+fn ToPacked(comptime T: type) type {
+    const info = @typeInfo(T).@"struct";
+    const names = std.meta.fieldNames(T);
+
+    const types: [names.len]type = blk: {
+        var t_arr: [names.len]type = undefined;
+        for (info.fields, 0..) |f, i| {
+            t_arr[i] = f.type;
+        }
+        break :blk t_arr;
     };
 
-    var args = std.process.args();
-    defer args.deinit();
+    return @Struct(
+        .@"packed", // Force the packed layout
+        null, // No specific backing integer
+        names,
+        &types,
+        &@splat(.{}), // Apply default attributes (alignment, etc) to all fields
+    );
+}
 
-    _ = args.skip();
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const arena = init.arena.allocator();
+    const io = init.io;
+    const args = try init.minimal.args.toSlice(arena);
 
-    const config_path = args.next().?;
+    if (args.len == 1) {
+        return error.ConfigRequired;
+    }
+
+    const config_path = args[1];
 
     var act = os.Sigaction{
         .handler = .{ .handler = sigHandler },
@@ -48,23 +79,14 @@ pub fn main() !void {
     _ = os.sigaction(os.SIG.INT, &act, null);
     _ = os.sigaction(os.SIG.TERM, &act, null);
 
-    const gpa, const is_debug = switch (builtin.mode) {
-        .Debug => .{ debug_allocator.allocator(), true },
-        else => .{ std.heap.smp_allocator, false },
-    };
-
-    defer if (is_debug) {
-        _ = debug_allocator.deinit();
-    };
-
     std.debug.print("{s}\n", .{config_path});
 
-    const config_file = try std.fs.openFileAbsolute(config_path, .{ .mode = .read_only });
-    defer config_file.close();
+    const config_file = try std.Io.Dir.openFileAbsolute(io, config_path, .{ .mode = .read_only });
+    defer config_file.close(io);
 
     var config_file_buf: [1024]u8 = undefined;
 
-    _ = &config_file.reader(&config_file_buf).interface;
+    _ = &config_file.reader(io, &config_file_buf).interface;
 
     const fd = @as(i32, @intCast(os.socket(os.AF.UNIX, os.SOCK.STREAM, 0)));
     var addr: os.sockaddr.un = undefined;
@@ -103,7 +125,7 @@ pub fn main() !void {
     const accept_req = req_pool.get().?;
     defer req_pool.release(accept_req);
 
-    accept_req.* = .{ .type = .accept, .fd = 0 };
+    accept_req.* = .{ .operation = .accept, .fd = 0 };
     _ = try ring.accept(@intFromPtr(accept_req), fd, null, null, 0);
 
     std.log.info("logs DB started", .{});
@@ -126,7 +148,7 @@ pub fn main() !void {
         if (!is_queue_empty) {
             for (0..remaining_sq) |_| {
                 if (queue.pop()) |r| {
-                    switch (r.type) {
+                    switch (r.operation) {
                         .accept => {
                             _ = try ring.accept(@intFromPtr(r), fd, null, null, 0);
                         },
@@ -137,6 +159,7 @@ pub fn main() !void {
                         .close => {
                             _ = try ring.close(@intFromPtr(r), r.fd);
                         },
+                        .timer => {},
                     }
 
                     remaining_sq -= 1;
@@ -161,7 +184,7 @@ pub fn main() !void {
 
             if (result < 0) {
                 std.debug.print("Error code: {d}\n", .{result});
-            } else switch (completed.type) {
+            } else switch (completed.operation) {
                 .accept => {
                     const recv_req = req_pool.get() orelse {
                         stop_accept = true;
@@ -169,7 +192,7 @@ pub fn main() !void {
                         continue;
                     };
 
-                    recv_req.* = .{ .type = .recv, .fd = result };
+                    recv_req.* = .{ .operation = .recv, .fd = result };
                     const recv_buf: os.IoUring.RecvBuffer = .{ .buffer = &recv_req.buf };
 
                     _ = ring.recv(@intFromPtr(recv_req), result, recv_buf, 0) catch
@@ -182,7 +205,7 @@ pub fn main() !void {
                 },
                 .recv => {
                     if (result == 0) {
-                        completed.type = .close;
+                        completed.operation = .close;
                         completed.buf = undefined;
 
                         _ = ring.close(
@@ -190,9 +213,14 @@ pub fn main() !void {
                             completed.fd,
                         ) catch push_to_queue(&queue, completed);
                     } else {
-                        _ = completed.buf[0..@as(usize, @intCast(result))];
+                        const new_position: u16 = @intCast(completed.position + result);
+                        std.debug.print("full buf - {s}\n", .{completed.buf});
+                        const data = completed.buf[completed.position..new_position];
+                        completed.position = if (new_position >= buf_size) 0 else new_position;
 
-                        const recv_buf: os.IoUring.RecvBuffer = .{ .buffer = &completed.buf };
+                        std.debug.print("current buf - {s}\n", .{data});
+
+                        const recv_buf: os.IoUring.RecvBuffer = .{ .buffer = completed.buf[completed.position..] };
                         _ = ring.recv(
                             @intFromPtr(completed),
                             completed.fd,
@@ -204,6 +232,7 @@ pub fn main() !void {
                 .close => {
                     req_pool.release(completed);
                 },
+                .timer => {},
             }
         }
     }
@@ -212,4 +241,10 @@ pub fn main() !void {
     _ = os.close(fd);
     _ = os.unlink(socket_path);
     std.log.info("shutdown successfully", .{});
+}
+
+test "packed struct size should equal to header_size" {
+    const Header = ToPacked(proto.Header);
+
+    std.debug.print("{} {}\n", .{ @sizeOf(Header), @sizeOf(proto.Header) });
 }
