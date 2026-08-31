@@ -1,0 +1,12 @@
+[package]
+name = "proxy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+pingora = { version = "0.6.0", features = ["lb", "boringssl"] }
+instant-acme = { version = "0.8.4", features = ["time", "x509-parser"] }
+hickory-server = { version = "0.25.2" }

@@ -1,0 +1,8 @@
+mode = "development"
+port = ":50051"
+jwtsecret = "mysupersecret"
+accessTokenTTL = "15m"
+refreshTokenTTL = "168h"
+origins = []
+postgresURL = "postgres://postgres:mysecretpassword@localhost/runvey"
+redisURL = "redis://localhost:6379/0"

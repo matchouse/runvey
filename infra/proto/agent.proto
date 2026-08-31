@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package runvey.agent;
+
+option go_package = "://proto";
+
+service AgentService {
+  rpc  Connect(stream AgentMessage) returns (stream AgentCommand);
+}
+
+message AgentMessage {
+ oneof message {
+    AgentHello hello = 1;
+    Heartbeat heartbeat = 2;
+    CommandResult result = 3;
+ }
+}
+
+message AgentHello {
+    string agent_id = 1;
+    string version = 2;
+
+    string hostname = 3;
+    string os = 4;
+    string arch = 5;
+}
+
+message Heartbeat {
+    int64 timestamp = 1;
+}
+
+message CommandResult {
+    string request_id = 1;
+}
+
+message AgentCommand {
+  string request_id = 1;
+
+  oneof command {
+    Deploy deploy = 2;
+    // Stop stop = 3;
+    // Restart restart = 4;
+  }
+}
+
+enum DeployType {
+    DEPLOY_TYPE_UNSPECIFIED = 0;
+    DEPLOY_TYPE_DOCKER_IMAGE = 1;
+    DEPLOY_TYPE_DOCKER_FILE = 2;
+}
+
+message Deploy {
+    DeployType type = 1;
+}
